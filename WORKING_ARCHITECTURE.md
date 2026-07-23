@@ -1,7 +1,8 @@
 # The Corykidion: Working Architecture Ledger
 
-**Status:** pre-implementation working document  
+**Status:** Phase 0/1 implemented (read-only core + CLI); ledger remains authoritative for design rationale  
 **First recorded:** 2026-07-21  
+**Last substantial update:** 2026-07-23 — see Implementation log  
 **Repository:** [`Corykidios/the_corykidion`](https://github.com/Corykidios/the_corykidion)
 
 The Corykidion is a proposed, independent integration layer between AI agents and [TheBrain](https://www.thebrain.com/). Its initial direction is a small, local-first, read-only-first system built over TheBrain's supported local API. It should make a selected Brain useful to an agent without treating an existing third-party repository as the whole product and without making unsafe assumptions about TheBrain's private storage.
@@ -41,11 +42,11 @@ Until the boundary is fully designed, use these conservative rules:
 ### Still unresolved
 
 - Whether optional deployment adapters belong here or in separate private repositories.
-- Whether the first public interface should be a library, CLI, stdio MCP server, or a small combination of those.
+- ~~Whether the first public interface should be a library, CLI, stdio MCP server, or a small combination of those.~~ **Resolved for Phase 1:** library + CLI. Stdio MCP remains a near-term candidate once the CLI has seen real use. See [ADR 0001](docs/decisions/0001-phase-1-implementation.md).
 - Whether cloud API support should ever exist; it is not required for the local-first core.
-- Which operating systems the first supported release will promise.
-- The implementation language and package structure.
-- The final license, including compatibility with any reused code.
+- Which operating systems the first supported release will promise. (Built and tested on Windows so far; nothing in the implementation is Windows-specific.)
+- ~~The implementation language and package structure.~~ **Resolved for Phase 1:** Python 3.11+, standard library only. See ADR 0001 and `src/corykidion/`.
+- The final license, including compatibility with any reused code. (MIT retained for now; no code has been copied from a donor repository, only patterns re-derived from documented behavior.)
 - How much multi-Brain coordination is broadly useful rather than specific to one operator.
 
 ## Current thesis
@@ -118,24 +119,24 @@ These are logical parts, not yet a committed folder structure.
 
 | Part | Responsibility | Status |
 |---|---|---|
-| Configuration boundary | Load endpoint and operator-supplied settings locally; keep credentials and deployment facts out of source and logs. | **Direction** |
-| Local API client | Minimal typed wrapper over the supported loopback API; normalize endpoints and distinguish app, user, Brain, and entity errors. | **Direction** |
-| Capability registry | Discover supported operations and fail closed when an API or version is unknown. | **Direction** |
-| Read model | Search; Thought retrieval; notes and attachment metadata; compound context; bounded neighbor exploration; recent activity where supported. | **Direction** |
-| Safety gate | Enforce read-only default, target scope, operation limits, path restrictions, and prohibited actions independent of transport. | **Direction** |
-| Planner and approval boundary | Turn a requested mutation into a deterministic preview that identifies target, effects, limits, and required approval. | **Direction** |
+| Configuration boundary | Load endpoint and operator-supplied settings locally; keep credentials and deployment facts out of source and logs. | **Implemented** — `src/corykidion/config.py`; env vars or a gitignored TOML file; rejects non-loopback endpoints unless explicitly overridden. |
+| Local API client | Minimal typed wrapper over the supported loopback API; normalize endpoints and distinguish app, user, Brain, and entity errors. | **Implemented, narrow** — `src/corykidion/client.py`; only the four evidenced endpoints (see Access routes / donor #14). Stdlib `urllib` only, injectable transport for tests. |
+| Capability registry | Discover supported operations and fail closed when an API or version is unknown. | **Implemented** — `src/corykidion/capabilities.py`; evidenced vs. candidate split, `CapabilityUnknown` on anything unverified. |
+| Read model | Search; Thought retrieval; notes and attachment metadata; compound context; bounded neighbor exploration; recent activity where supported. | **Implemented, partial** — `src/corykidion/read.py` covers connectivity, single-Thought retrieval, and URL-dedup lookup. Search, notes, links, and neighbor traversal remain candidate capabilities pending verification against a running local API. |
+| Safety gate | Enforce read-only default, target scope, operation limits, path restrictions, and prohibited actions independent of transport. | **Implemented, Phase 1 scope** — `src/corykidion/safety.py`; target-scope enforcement is live, `assert_write_allowed()` exists and is wired for Phase 2 but nothing calls it yet since there is no write path. |
+| Planner and approval boundary | Turn a requested mutation into a deterministic preview that identifies target, effects, limits, and required approval. | **Candidate for Phase 2** |
 | Operation executor | Apply only approved constructive operations and refuse any operation outside its declared capability. | **Candidate for Phase 2** |
-| Journal and provenance | Record request, plan, approval scope, source keys, results, errors, and verification receipts without recording secrets. | **Direction** |
-| Verification and recovery | Read back mutations, detect partial failure, support idempotent resume, and produce bounded compensation instructions. | **Direction** |
+| Journal and provenance | Record request, plan, approval scope, source keys, results, errors, and verification receipts without recording secrets. | **Candidate for Phase 2** |
+| Verification and recovery | Read back mutations, detect partial failure, support idempotent resume, and produce bounded compensation instructions. | **Candidate for Phase 2** |
 | Import pipeline | Validate a declarative graph specification offline; report collisions/cycles; plan, resume, and verify supported imports. | **Candidate for Phase 3** |
-| Export/projection pipeline | Produce deterministic typed exports with stable IDs and provenance for inspection or curated publication. | **Candidate for Phase 1/3** |
+| Export/projection pipeline | Produce deterministic typed exports with stable IDs and provenance for inspection or curated publication. | **Implemented, single-Thought scope** — `src/corykidion/export.py`; deterministic JSON with provenance, sorted keys for stable diffs. Subtree/multi-Thought export is still Candidate for Phase 3. |
 | Compact-ID codec | Convert canonical UUIDs only where internal links or exports require compact identifiers. | **Deferred utility** |
-| Transport adapters | CLI, library API, stdio MCP, or other narrow surfaces calling the same core. No transport receives extra authority. | **Unresolved** |
+| Transport adapters | CLI, library API, stdio MCP, or other narrow surfaces calling the same core. No transport receives extra authority. | **CLI implemented** — `src/corykidion/cli.py`. Stdio MCP remains unresolved/candidate. |
 | Advanced modules | Graph query language, calendars, spaced repetition/game state, and publishing views. | **Deferred** |
 
 ### Candidate source layout
 
-This layout is a discussion aid, not a decision:
+This was a discussion aid, not a decision, when first written. The Phase 1 implementation uses a flatter version of it (a single `corykidion` package rather than nested `client/`, `model/`, `safety/` subpackages — small enough that the split wasn't earning its complexity yet). The original discussion layout is kept below for comparison; see `src/corykidion/` for what actually exists.
 
 ```text
 src/
@@ -235,7 +236,7 @@ Only after the core is stable, evaluate:
 
 Before this single-ledger approach was chosen, the likely founding scaffold included a README, purpose and boundary documents, architectural decisions, donor-repository research, generic examples, implementation phases, and test/fixture directories. Creating all of those now would make provisional distinctions look settled.
 
-**Current decision:** keep this one file as the landing place until the first implementation choice creates a real need for another artifact. Split material out only when it has a stable consumer:
+**Original decision:** keep this one file as the landing place until the first implementation choice creates a real need for another artifact. Split material out only when it has a stable consumer:
 
 - a README when the project can truthfully say what can be installed or run;
 - an ADR when a consequential technical choice is made;
@@ -243,12 +244,26 @@ Before this single-ledger approach was chosen, the likely founding scaffold incl
 - a security document when an executable attack surface exists;
 - source and tests together when the first behavior is implemented.
 
+**2026-07-23 update:** that real need arrived. `README.md`, `docs/decisions/0001-phase-1-implementation.md`, and `src/`/`tests/` now exist, per the criteria this section set for itself. This ledger stays as the design-rationale document — the README explains what the software does; this file explains why it's shaped that way and what's still undecided. Nothing about that split is provisional anymore; it happened because the stated conditions were met, not by default.
+
+## Implementation log
+
+**2026-07-23 — Phase 0/1 implemented (read-only core + CLI).**
+
+- **Maturity:** direction implemented, narrowed by evidence.
+- **Motivating use case:** an operator (this repository's owner) asked for the donor-repository assessment to be acted on rather than left as a standing ledger, and for the repository to reach a state where a README could honestly describe something installable.
+- **Affected parts:** configuration boundary, local API client, capability registry, read model, safety gate, export/projection pipeline (single-Thought), CLI transport — see the updated Proposed working parts table above and [ADR 0001](docs/decisions/0001-phase-1-implementation.md) for the full reasoning.
+- **Decision:** implement only the four endpoints with a documented, evidenced shape (TheBrainTech/send-to-thebrain's README — donor #14), and register every other read Phase 1 originally aspired to (search, notes, links, neighbor traversal, recent activity) as a **candidate** capability that fails closed with `CapabilityUnknown` rather than guessing at an unverified request/response shape. TheBrain's own local-API announcement states the local API "speaks the same shape" as the documented cloud API at api.bra.in, which is why those are candidates and not rejected outright — but "plausible because the cloud API has it" was judged insufficient evidence to implement against, per this ledger's own evidence/candidate distinction.
+- **Open question this raises:** promoting a candidate capability needs a captured response from a running local API instance, which this implementation pass did not have access to. Whoever runs this against a real TheBrain install next should capture those shapes and turn them into fixtures — see the promotion procedure documented in `src/corykidion/capabilities.py`.
+- **Safety and boundary impact:** none of the fifteen invariants below were loosened to get here. No write path was added (invariant 10, "no destructive first release"); `SafetyGate.assert_write_allowed()` exists but nothing calls it. The capability registry is a new, stricter application of invariant 3 to the client layer itself, not just to storage.
+- **Next test or action:** run `corykidion status` against a real running TheBrain instance (not exercised in this pass — see safety invariant about disposable test Brains in Phase 0); capture and fixture the response shapes for `thought.search` and `thought.notes` as the next capability promotions.
+
 ## Immediate decisions waiting for evidence
 
-1. What is the smallest useful read-only vertical slice?
-2. Which language best matches the official local client evidence and intended contributors?
-3. Is the first transport a CLI, stdio MCP server, or library call surface?
-4. Which current TheBrain versions and operating systems can be tested honestly?
+1. ~~What is the smallest useful read-only vertical slice?~~ **Resolved:** connectivity check, single-Thought retrieval, brain listing, URL-dedup lookup — see the Implementation log above.
+2. ~~Which language best matches the official local client evidence and intended contributors?~~ **Resolved:** Python 3.11+, stdlib only. See ADR 0001.
+3. ~~Is the first transport a CLI, stdio MCP server, or library call surface?~~ **Resolved for Phase 1:** library + CLI. Stdio MCP still open for a later pass.
+4. Which current TheBrain versions and operating systems can be tested honestly? (Still open — this pass had no running TheBrain instance to test against; see Implementation log.)
 5. What local API behavior needs captured contract fixtures before implementation?
 6. Which configuration belongs to the reusable product, and which must remain deployment-private?
 7. Which open-source license fits both the intended project and any code considered for reuse?

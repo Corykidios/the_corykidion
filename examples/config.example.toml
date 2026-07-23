@@ -1,0 +1,25 @@
+# Copy this file to config.toml (already .gitignore'd) and fill in your own
+# values, or skip the file entirely and set the equivalent environment
+# variables: CORYKIDION_ENDPOINT, CORYKIDION_API_KEY, CORYKIDION_BRAIN_ID.
+#
+# Find your endpoint and API key in TheBrain's desktop app under
+# Settings > User > Local API. The endpoint will look like
+# http://localhost:PORT/api — the exact port is assigned per-install.
+#
+# Every value below is fabricated. Do not reuse it.
+
+endpoint = "http://localhost:52341/api"
+api_key = "REPLACE_ME"
+
+# Optional: saves typing the brain_id on every CLI call. Individual
+# operations still take an explicit brain_id argument — this is not an
+# ambient default that lets an operation silently target a different brain.
+default_brain_id = "00000000-0000-0000-0000-000000000000"
+
+# Optional: defaults to 10.0
+timeout_seconds = 10.0
+
+# Optional: defaults to false. corykidion refuses non-loopback endpoints
+# unless you set this explicitly (safety invariant 1). There is currently
+# no supported non-loopback deployment, so leave this alone.
+allow_remote = false

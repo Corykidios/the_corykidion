@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Operator configuration. Real endpoints, API keys, and brain IDs never
+# belong in the repository — see WORKING_ARCHITECTURE.md, product boundary.
+config.toml
+.env
+*.local.toml
+
+# Local export output
+/out/
