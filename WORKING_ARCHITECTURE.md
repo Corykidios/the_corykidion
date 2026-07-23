@@ -1,6 +1,6 @@
 # The Corykidion: Working Architecture Ledger
 
-**Status:** Phase 0/1 implemented (read-only core + CLI); ledger remains authoritative for design rationale  
+**Status:** Phase 1 read core live-verified; Phase 2 write pipeline implemented and unit-tested, not yet exercised against a real Brain; ledger remains authoritative for design rationale  
 **First recorded:** 2026-07-21  
 **Last substantial update:** 2026-07-23 — see Implementation log  
 **Repository:** [`Corykidios/the_corykidion`](https://github.com/Corykidios/the_corykidion)
@@ -120,14 +120,14 @@ These are logical parts, not yet a committed folder structure.
 | Part | Responsibility | Status |
 |---|---|---|
 | Configuration boundary | Load endpoint and operator-supplied settings locally; keep credentials and deployment facts out of source and logs. | **Implemented** — `src/corykidion/config.py`; env vars or a gitignored TOML file; rejects non-loopback endpoints unless explicitly overridden. |
-| Local API client | Minimal typed wrapper over the supported loopback API; normalize endpoints and distinguish app, user, Brain, and entity errors. | **Implemented, narrow** — `src/corykidion/client.py`; only the four evidenced endpoints (see Access routes / donor #14). Stdlib `urllib` only, injectable transport for tests. |
-| Capability registry | Discover supported operations and fail closed when an API or version is unknown. | **Implemented** — `src/corykidion/capabilities.py`; evidenced vs. candidate split, `CapabilityUnknown` on anything unverified. |
-| Read model | Search; Thought retrieval; notes and attachment metadata; compound context; bounded neighbor exploration; recent activity where supported. | **Implemented, partial** — `src/corykidion/read.py` covers connectivity, single-Thought retrieval, and URL-dedup lookup. Search, notes, links, and neighbor traversal remain candidate capabilities pending verification against a running local API. |
-| Safety gate | Enforce read-only default, target scope, operation limits, path restrictions, and prohibited actions independent of transport. | **Implemented, Phase 1 scope** — `src/corykidion/safety.py`; target-scope enforcement is live, `assert_write_allowed()` exists and is wired for Phase 2 but nothing calls it yet since there is no write path. |
-| Planner and approval boundary | Turn a requested mutation into a deterministic preview that identifies target, effects, limits, and required approval. | **Candidate for Phase 2** |
-| Operation executor | Apply only approved constructive operations and refuse any operation outside its declared capability. | **Candidate for Phase 2** |
-| Journal and provenance | Record request, plan, approval scope, source keys, results, errors, and verification receipts without recording secrets. | **Candidate for Phase 2** |
-| Verification and recovery | Read back mutations, detect partial failure, support idempotent resume, and produce bounded compensation instructions. | **Candidate for Phase 2** |
+| Local API client | Minimal typed wrapper over the supported loopback API; normalize endpoints and distinguish app, user, Brain, and entity errors. | **Implemented** — `src/corykidion/client.py`. Eleven endpoints total: the four from ADR 0001 plus search, graph, notes, and activity (live-verified 2026-07-23, ADR 0002) plus three writes (route-evidenced from donor #14; `thought.create`'s body is explicitly unverified). Stdlib `urllib` only, injectable transport for tests. |
+| Capability registry | Discover supported operations and fail closed when an API or version is unknown. | **Implemented** — `src/corykidion/capabilities.py`; evidenced vs. candidate split, `CapabilityUnknown` on anything unverified, `mutates` flag distinguishes reads from writes. |
+| Read model | Search; Thought retrieval; notes and attachment metadata; compound context; bounded neighbor exploration; recent activity where supported. | **Implemented** — `src/corykidion/read.py`. `thought.graph` (live-verified) turned out to unify "compound context," "neighbor exploration," and "link enumeration" into one endpoint — see ADR 0002's design-consequence note. |
+| Safety gate | Enforce read-only default, target scope, operation limits, path restrictions, and prohibited actions independent of transport. | **Implemented** — `src/corykidion/safety.py`; target-scope enforcement is live for both reads and writes, `assert_write_allowed()` is now called by `operations.py` on every apply. |
+| Planner and approval boundary | Turn a requested mutation into a deterministic preview that identifies target, effects, limits, and required approval. | **Implemented, unit-tested only** — `src/corykidion/operations.py`, `WriteOperations.plan_*`. Side-effect-free; never touches the network. Not yet exercised against a real Brain — see ADR 0002. |
+| Operation executor | Apply only approved constructive operations and refuse any operation outside its declared capability. | **Implemented, unit-tested only** — `WriteOperations.apply()`; requires `approved=True` and a write-enabled `SafetyGate` explicitly, refuses otherwise. |
+| Journal and provenance | Record request, plan, approval scope, source keys, results, errors, and verification receipts without recording secrets. | **Implemented, unit-tested only** — `JournalWriter`, append-only JSON-lines, no credentials ever written. |
+| Verification and recovery | Read back mutations, detect partial failure, support idempotent resume, and produce bounded compensation instructions. | **Implemented, partial, unit-tested only** — read-back verification exists per-operation in `WriteOperations._verify()` and is honest about its own limits (Thought-level activation cannot be verified with currently evidenced endpoints, only Brain-level). Idempotent resume and compensation are not yet built. |
 | Import pipeline | Validate a declarative graph specification offline; report collisions/cycles; plan, resume, and verify supported imports. | **Candidate for Phase 3** |
 | Export/projection pipeline | Produce deterministic typed exports with stable IDs and provenance for inspection or curated publication. | **Implemented, single-Thought scope** — `src/corykidion/export.py`; deterministic JSON with provenance, sorted keys for stable diffs. Subtree/multi-Thought export is still Candidate for Phase 3. |
 | Compact-ID codec | Convert canonical UUIDs only where internal links or exports require compact identifiers. | **Deferred utility** |
@@ -188,6 +188,8 @@ examples/        # fabricated configurations and workflows
 
 ### Phase 1: read-only core
 
+*Implemented — see Implementation log, 2026-07-23. Kept below as the original aspiration for comparison.*
+
 - Connect to the local app and report app/user/open-Brain state.
 - Search Thoughts.
 - Retrieve a compound Thought context: identity, relations, note, and attachment metadata.
@@ -197,6 +199,8 @@ examples/        # fabricated configurations and workflows
 - Expose the core through one narrow transport only after its safety boundary is tested.
 
 ### Phase 2: bounded constructive writes
+
+*Pipeline implemented and unit-tested — see Implementation log, 2026-07-23. Not yet exercised against a real Brain; `create Thought`'s request body and `append note`/`create link` remain unverified.*
 
 Initially consider only:
 
@@ -258,13 +262,23 @@ Before this single-ledger approach was chosen, the likely founding scaffold incl
 - **Safety and boundary impact:** none of the fifteen invariants below were loosened to get here. No write path was added (invariant 10, "no destructive first release"); `SafetyGate.assert_write_allowed()` exists but nothing calls it. The capability registry is a new, stricter application of invariant 3 to the client layer itself, not just to storage.
 - **Next test or action:** run `corykidion status` against a real running TheBrain instance (not exercised in this pass — see safety invariant about disposable test Brains in Phase 0); capture and fixture the response shapes for `thought.search` and `thought.notes` as the next capability promotions.
 
+**2026-07-23 — live verification pass + Phase 2 write pipeline.**
+
+- **Maturity:** candidate promoted to evidence (reads); direction implemented, unit-tested only (writes).
+- **Motivating use case:** the operator connected this codebase to a real, running TheBrain instance and asked for the remaining candidate capabilities to be resolved against it rather than left as a standing list, and for Phase 2 to be built rather than deferred indefinitely.
+- **Affected parts:** local API client, capability registry, read model, CLI, and a new `src/corykidion/operations.py` — see the updated Proposed working parts table above and [ADR 0002](docs/decisions/0002-live-verified-read-capabilities.md) for the full account.
+- **Decision:** `thought.search`, `thought.graph`, `thought.notes`, and `activity.recent` were verified with real GET requests against a running local API instance and promoted to evidenced. `thought.graph`'s response turned out to unify what this ledger had listed as three separate future capabilities (compound context, neighbor exploration, link enumeration) — `thought.links` and `thought.neighbors` are retired as separate entries and now point callers to `thought.graph`. `thought.create`'s request body remains explicitly unverified: an attempt to probe it safely (an intentionally invalid POST, meant to trigger a pre-execution validation error the same way it worked for the read endpoints' query parameters) was correctly blocked before it ran, as an unreviewed write against a live personal Brain. `attachment.attach_url` and `thought.activate` are implemented from send-to-thebrain's own documented endpoint shapes. The Phase 2 write pipeline (plan/approve/journal/apply/verify) is fully built and tested against fabricated fixtures, but no live write has been executed against the operator's real Brains in this pass.
+- **Open question this raises:** `thought.create`'s body schema, and `note.append` / `link.create`'s existence and shape, still need verification — ideally by capturing the desktop app's own outgoing request during a real create, rather than by probing destructively. See ADR 0002's closing section.
+- **Safety and boundary impact:** invariant 10 ("no destructive first release") is now more precisely "no destructive release" — Phase 2 exists, but every write requires explicit `approved=True` and an explicitly write-enabled `SafetyGate`; the default gate is still read-only, matching invariant 2. Invariants 5–9 (plan before mutation, scoped approval, journal before/during, verify after, idempotency-or-resumability) are implemented for the three write operations except idempotent resume, which is not yet built. No real Brain content was captured into this repository — live-observed response shapes were converted to fabricated fixtures before being committed, per the product boundary.
+- **Next test or action:** get explicit operator authorization for one supervised live write (e.g. `attach_url` against a designated scratch Brain) to prove the pipeline end-to-end outside of fixtures; verify `thought.create`'s body schema; attempt `note.append` and `link.create` discovery.
+
 ## Immediate decisions waiting for evidence
 
 1. ~~What is the smallest useful read-only vertical slice?~~ **Resolved:** connectivity check, single-Thought retrieval, brain listing, URL-dedup lookup — see the Implementation log above.
 2. ~~Which language best matches the official local client evidence and intended contributors?~~ **Resolved:** Python 3.11+, stdlib only. See ADR 0001.
 3. ~~Is the first transport a CLI, stdio MCP server, or library call surface?~~ **Resolved for Phase 1:** library + CLI. Stdio MCP still open for a later pass.
-4. Which current TheBrain versions and operating systems can be tested honestly? (Still open — this pass had no running TheBrain instance to test against; see Implementation log.)
-5. What local API behavior needs captured contract fixtures before implementation?
+4. ~~Which current TheBrain versions and operating systems can be tested honestly?~~ **Partially resolved:** verified live against TheBrain 15 (build 15.0.534+) on Windows. Other OSes untested.
+5. ~~What local API behavior needs captured contract fixtures before implementation?~~ **Resolved for the four newly-promoted reads:** see ADR 0002. Still open for `thought.create`'s body, `note.append`, and `link.create`.
 6. Which configuration belongs to the reusable product, and which must remain deployment-private?
 7. Which open-source license fits both the intended project and any code considered for reuse?
 8. What explicit evidence would justify multi-Brain coordination in the public core?

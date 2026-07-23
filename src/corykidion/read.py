@@ -12,7 +12,16 @@ from dataclasses import dataclass
 
 from corykidion.capabilities import CapabilityRegistry
 from corykidion.client import LocalBrainClient
-from corykidion.models import AppState, Attachment, Brain, Thought
+from corykidion.models import (
+    AppState,
+    Attachment,
+    Brain,
+    ModificationEntry,
+    Note,
+    SearchResult,
+    Thought,
+    ThoughtGraph,
+)
 from corykidion.safety import SafetyGate
 
 
@@ -77,6 +86,35 @@ class ReadModel:
         self._safety.assert_allowed_target(brain_id)
         raw = self._client.find_attachments_by_location(brain_id, url)
         return [Attachment.from_json(a) for a in raw]
+
+    def search(self, brain_id: str, query_text: str, max_results: int = 10) -> list[SearchResult]:
+        """Search Thoughts by name/label within one Brain."""
+        self._capabilities.require("thought.search")
+        self._safety.assert_allowed_target(brain_id)
+        raw = self._client.search(brain_id, query_text, max_results=max_results)
+        return [SearchResult.from_json(brain_id, r) for r in raw]
+
+    def get_graph(self, brain_id: str, thought_id: str) -> ThoughtGraph:
+        """Compound Thought context: identity, parents, children, jumps,
+        links, and attachment metadata, in one call."""
+        self._capabilities.require("thought.graph")
+        self._safety.assert_allowed_target(brain_id)
+        raw = self._client.get_graph(brain_id, thought_id)
+        return ThoughtGraph.from_json(brain_id, raw)
+
+    def get_notes(self, brain_id: str, thought_id: str) -> Note:
+        """Retrieve one Thought's note content."""
+        self._capabilities.require("thought.notes")
+        self._safety.assert_allowed_target(brain_id)
+        raw = self._client.get_notes(brain_id, thought_id)
+        return Note.from_json(raw)
+
+    def recent_activity(self, brain_id: str, max_logs: int = 20) -> list[ModificationEntry]:
+        """Recent modification-log entries for one Brain, newest first."""
+        self._capabilities.require("activity.recent")
+        self._safety.assert_allowed_target(brain_id)
+        raw = self._client.get_modifications(brain_id, max_logs=max_logs)
+        return [ModificationEntry.from_json(m) for m in raw]
 
     def known_capabilities(self) -> dict[str, list[str]]:
         """What this ReadModel can and can't do right now, for introspection

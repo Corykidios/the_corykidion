@@ -76,8 +76,14 @@ class LocalBrainClient:
     def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         return self._request("GET", path, params=params, body=None)
 
-    def _post(self, path: str, params: dict[str, str] | None = None) -> Any:
-        return self._request("POST", path, params=params, body=b"")
+    def _post(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        body = json.dumps(json_body).encode("utf-8") if json_body is not None else b""
+        return self._request("POST", path, params=params, body=body)
 
     def _request(
         self,
@@ -95,6 +101,8 @@ class LocalBrainClient:
             "Authorization": f"Bearer {self._config.api_key}",
             "Accept": "application/json",
         }
+        if body:
+            headers["Content-Type"] = "application/json"
         response = self._transport(method, url, headers, body)
         if response.status == 401 or response.status == 403:
             raise AuthenticationError(
@@ -136,3 +144,89 @@ class LocalBrainClient:
         if isinstance(data, dict):
             return data.get("attachments", [])
         return data
+
+    def search(self, brain_id: str, query_text: str, max_results: int = 10) -> list[dict[str, Any]]:
+        """GET /search/{brainId}?queryText=...&maxResults=...
+
+        Verified 2026-07-23 against a running local API instance: returns a
+        JSON array directly (no envelope), each entry shaped like
+        ``{"sourceThought": {...}, "name": ..., "isFromOtherBrain": ..., ...}``.
+        """
+        data = self._get(
+            f"/search/{brain_id}",
+            params={"queryText": query_text, "maxResults": str(max_results)},
+        )
+        return data if isinstance(data, list) else []
+
+    def get_graph(self, brain_id: str, thought_id: str) -> dict[str, Any]:
+        """GET /thoughts/{brainId}/{thoughtId}/graph
+
+        Verified 2026-07-23 against a running local API instance: returns
+        ``activeThought``, ``parents``, ``children``, ``jumps``, ``siblings``,
+        ``tags``, ``type``, ``links``, and ``attachments``.
+        """
+        return self._get(f"/thoughts/{brain_id}/{thought_id}/graph")
+
+    def get_notes(self, brain_id: str, thought_id: str) -> dict[str, Any]:
+        """GET /notes/{brainId}/{thoughtId}
+
+        Verified 2026-07-23 against a running local API instance: returns
+        ``{"brainId", "sourceId", "sourceType", "modificationDateTime",
+        "markdown", "html", "text"}``. An unwritten note returns
+        ``markdown=""``, not a 404.
+        """
+        return self._get(f"/notes/{brain_id}/{thought_id}")
+
+    def get_modifications(self, brain_id: str, max_logs: int = 20) -> list[dict[str, Any]]:
+        """GET /brains/{brainId}/modifications?maxLogs=...
+
+        Verified 2026-07-23 against a running local API instance: returns a
+        JSON array of raw modification-log entries, newest first.
+        """
+        data = self._get(f"/brains/{brain_id}/modifications", params={"maxLogs": str(max_logs)})
+        return data if isinstance(data, list) else []
+
+    # -- evidenced operations, writes -----------------------------------------
+    #
+    # These mutate the target Brain. Nothing in this class enforces the
+    # safety gate — callers must go through corykidion.operations, which
+    # requires SafetyGate.assert_write_allowed() and produces a journaled,
+    # verified operation. Calling these methods directly bypasses that, the
+    # same way calling urllib directly would; don't.
+
+    def attach_url(self, brain_id: str, thought_id: str, url: str, name: str) -> dict[str, Any]:
+        """POST /attachments/{brainId}/{thoughtId}/url?url=...&name=...
+
+        Path, method, and query parameters documented in
+        TheBrainTech/send-to-thebrain's README. Not independently verified
+        by this codebase against a running instance (see ADR 0002).
+        """
+        return self._post(
+            f"/attachments/{brain_id}/{thought_id}/url",
+            params={"url": url, "name": name},
+        )
+
+    def activate_thought(self, brain_id: str, thought_id: str) -> dict[str, Any]:
+        """POST /app/brain/{brainId}/thought/{thoughtId}/activate
+
+        Path and method documented in TheBrainTech/send-to-thebrain's
+        README; takes no body or query parameters. Not independently
+        verified by this codebase against a running instance (see ADR 0002).
+        """
+        return self._post(f"/app/brain/{brain_id}/thought/{thought_id}/activate")
+
+    def create_thought(self, brain_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /thoughts/{brainId}
+
+        Path and method documented in TheBrainTech/send-to-thebrain's
+        README ("create child thought"); the request body schema is NOT
+        verified by this codebase — an attempt to probe it safely (via an
+        intentionally invalid body meant to trigger a 400 validation error
+        without a real write) was blocked by policy before it ran, correctly,
+        since it was still an unreviewed write against a live personal
+        Brain. See ADR 0002.
+
+        Callers must therefore supply the complete, correct body dict
+        themselves. This method does not add, rename, or default any field.
+        """
+        return self._post(f"/thoughts/{brain_id}", json_body=body)

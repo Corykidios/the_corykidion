@@ -79,14 +79,73 @@ def test_known_capabilities_splits_evidenced_and_candidate():
     caps = read_model.known_capabilities()
 
     assert "app.state" in caps["evidenced"]
-    assert "thought.search" in caps["candidate"]
+    assert "thought.search" in caps["evidenced"]
+    assert "note.append" in caps["candidate"]
 
 
 def test_unsupported_operation_would_fail_closed():
-    # There is no public ReadModel method for search yet — this test
-    # documents the underlying mechanism directly, so the intent is visible
-    # even though no code path currently calls it.
+    # No public ReadModel method calls note.append yet — this documents the
+    # underlying mechanism directly, so the intent is visible even without
+    # a code path exercising it.
     transport = FakeTransport()
     read_model = make_read_model(transport)
     with pytest.raises(CapabilityUnknown):
-        read_model._capabilities.require("thought.search")
+        read_model._capabilities.require("note.append")
+
+
+def test_search_returns_normalized_results():
+    transport = FakeTransport(responses={("GET", f"/search/{BRAIN_ID}"): fx.SEARCH_RESULTS})
+    read_model = make_read_model(transport)
+
+    results = read_model.search(BRAIN_ID, "fixture")
+
+    assert len(results) == 1
+    assert results[0].name == "Fixture Match"
+    assert results[0].thought.id == "55555555-5555-5555-5555-555555555555"
+
+
+def test_search_respects_target_scope():
+    transport = FakeTransport(responses={("GET", f"/search/{BRAIN_ID}"): fx.SEARCH_RESULTS})
+    safety = SafetyGate(allowed_brain_ids=frozenset({"some-other-brain"}))
+    read_model = make_read_model(transport, safety=safety)
+
+    with pytest.raises(SafetyViolation):
+        read_model.search(BRAIN_ID, "fixture")
+
+
+def test_get_graph_returns_normalized_graph():
+    transport = FakeTransport(
+        responses={("GET", f"/thoughts/{BRAIN_ID}/{THOUGHT_ID}/graph"): fx.THOUGHT_GRAPH}
+    )
+    read_model = make_read_model(transport)
+
+    graph = read_model.get_graph(BRAIN_ID, THOUGHT_ID)
+
+    assert graph.active_thought.id == THOUGHT_ID
+    assert len(graph.parents) == 1
+    assert graph.parents[0].name == "Fixture Parent"
+    assert len(graph.links) == 1
+    assert graph.links[0].thought_id_b == THOUGHT_ID
+
+
+def test_get_notes_returns_markdown():
+    transport = FakeTransport(
+        responses={("GET", f"/notes/{BRAIN_ID}/{THOUGHT_ID}"): fx.NOTE_WITH_CONTENT}
+    )
+    read_model = make_read_model(transport)
+
+    note = read_model.get_notes(BRAIN_ID, THOUGHT_ID)
+
+    assert "Fixture note" in note.markdown
+
+
+def test_recent_activity_returns_entries():
+    transport = FakeTransport(
+        responses={("GET", f"/brains/{BRAIN_ID}/modifications"): fx.MODIFICATIONS}
+    )
+    read_model = make_read_model(transport)
+
+    entries = read_model.recent_activity(BRAIN_ID, max_logs=3)
+
+    assert len(entries) == 1
+    assert entries[0].mod_type == 301

@@ -2,7 +2,7 @@
 
 A small, local-first, read-only-first bridge between AI agents and [TheBrain](https://www.thebrain.com/).
 
-It talks to TheBrain's desktop app over its local HTTP API — which is only reachable while the app is open on your machine — and supports a narrow, specific set of operations: check that a Brain is open, look up one Thought, list the Brains you have, and check whether a URL is already attached somewhere before creating a duplicate. That is the complete list of what it does today. It does not write to your Brain, and every capability it does not fully support is documented as unsupported rather than left ambiguous.
+It talks to TheBrain's desktop app over its local HTTP API — which is only reachable while the app is open on your machine. It can check that a Brain is open, look up a Thought, search by name, retrieve a Thought's full context (parents, children, jumps, links, attachments) and notes, check recent activity, and export a deterministic snapshot. It also has a write pipeline — attaching URLs, activating Thoughts, and creating Thoughts — that is fully built and unit-tested but has not yet been run against a real Brain. Every capability this package does not fully support is documented as unsupported rather than left ambiguous.
 
 Not affiliated with or endorsed by TheBrain Technologies.
 
@@ -14,17 +14,39 @@ Summary of what that survey found: most of the eighteen repositories are bound t
 
 ## What actually works right now
 
+### Reads
+
+Every read below has been verified against a real, running TheBrain instance, not just against fixtures.
+
 | Capability | What it does |
 |---|---|
 | `status` | Confirms TheBrain's desktop app is reachable, reports which Brain is currently open, and lists every Brain visible on the machine. |
 | `thought get` | Retrieves one Thought by ID: its name and label. |
 | `thought find-url` | Checks whether a URL is already attached to something in a Brain, using the same duplicate-detection approach as the official browser extension, so you don't create the same Thought twice. |
+| `thought search` | Searches Thoughts by name/label within a Brain. |
+| `thought graph` | Retrieves a Thought's full context in one call: identity, parents, children, jumps, links, and attachment metadata. |
+| `thought notes` | Retrieves a Thought's note content. |
+| `activity` | Lists a Brain's recent modification-log entries, newest first. |
 | `export thought` | Writes a deterministic, provenance-stamped JSON snapshot of one Thought. This is a projection for inspection, not a backup — TheBrain's own dated backups remain the source of truth. |
 | `capabilities` | Lists exactly what's implemented versus what's planned, so you (or an agent) never have to guess. |
 
-Everything else that sounds like it should exist — searching Thoughts by name, reading notes, walking links, exploring neighbors — is deliberately **not implemented yet**. TheBrain states that its local API "speaks the same shape" as its documented cloud API, which makes those operations *plausible*, but no source available while building this had a captured request/response for them against a real local instance. Rather than guess at a shape and risk incorrect results against a real Brain, this package registers those operations as known-but-unverified and refuses to call them — calling one raises a `CapabilityUnknown` error instead of returning a wrong answer. Run `corykidion capabilities` to see the live list of what's evidenced versus what's still candidate.
+Two capabilities remain unresolved even after live testing: `thought.links` and `thought.neighbors` are retired as separate operations, because `thought graph`'s response already contains both (TheBrain's link model is parent/child/jump, so links and neighbors are the same data). Calling either old name now points you to `thought graph` instead of failing silently.
 
-There is also no write path. Creating Thoughts, attaching URLs, and adding notes are designed for (see the Phase 2 section of the architecture ledger) but not built. This is intentional: a read-only tool has a much smaller set of ways to cause damage, and the additional safety mechanisms writes would require — approval steps, an operation journal, post-write verification — are specified in the ledger but not yet implemented or tested.
+### Writes
+
+A write pipeline exists — plan, explicit approval, journal, apply, read-back verification — implemented in `src/corykidion/operations.py` and covered by unit tests against fabricated fixtures. It has not been run against a real Brain.
+
+| Capability | What it does | Status |
+|---|---|---|
+| `write attach-url` | Attaches a URL to a Thought. | Route and parameters documented by TheBrain's own reference client; not yet exercised live. |
+| `write activate` | Activates (opens/focuses) a Thought. | Route documented by TheBrain's own reference client; not yet exercised live. Verification is Brain-level only — no evidenced endpoint currently exposes which specific Thought is active. |
+| Create a Thought | Available as a library call (`WriteOperations.plan_create_thought`), not exposed on the CLI yet. | The route is documented; the request body schema is not verified against a real instance. The caller must supply the complete body explicitly — this package will not guess field names for a write. |
+
+Both CLI write subcommands require `--approve` and `--journal PATH` explicitly. There is no default-approve path, and no write happens without both.
+
+Two more writes described in the design ledger — appending a note and creating a link directly — have no verified request shape at all and are not implemented.
+
+Run `corykidion capabilities` for the live, authoritative list of what's evidenced versus what's still unverified.
 
 ## Installing it
 
@@ -99,19 +121,20 @@ print(f"{status.brain_count} brains visible, active: {status.active_brain_id}")
 
 ## How it's put together
 
-The short version: a configuration boundary that keeps your endpoint and API key out of source control, a minimal HTTP client that speaks exactly four documented endpoints and nothing else, a capability registry that fails closed on anything unverified, a safety gate that enforces target scope independent of whatever transport is calling it, a read model that composes all of that into agent-useful calls, and a CLI on top. Every one of those pieces is unit-tested against fabricated fixtures — the test suite never touches a real network socket or a real Brain.
+A configuration boundary that keeps your endpoint and API key out of source control; a minimal HTTP client that speaks exactly the documented endpoints and nothing else; a capability registry that fails closed on anything unverified and flags which operations mutate data; a safety gate that enforces target scope and, for writes, requires explicit opt-in independent of whatever transport is calling it; a read model and a write-operations pipeline (plan, approve, journal, apply, verify) built on top of that; and a CLI. Every one of those pieces is unit-tested against fabricated fixtures — the test suite never touches a real network socket or a real Brain.
 
 ```text
 src/corykidion/
   config.py         configuration boundary — env vars or a gitignored TOML file
-  client.py         the local API client — four evidenced endpoints, stdlib only
+  client.py         the local API client — eleven evidenced endpoints, stdlib only
   capabilities.py   the evidenced/candidate registry — fails closed by design
-  safety.py         target-scope enforcement, independent of transport
+  safety.py         target-scope and write-gate enforcement, independent of transport
   read.py           the agent-facing read model
+  operations.py     the Phase 2 write pipeline: plan, approve, journal, apply, verify
   export.py         deterministic, provenance-stamped JSON export
   cli.py            the CLI transport
 tests/
-  contract/         client, capability, read-model, and export tests
+  contract/         client, capability, read-model, export, and operations tests
   safety/           config and safety-gate tests
   fixtures/         fabricated responses — nothing here is a real Brain
 ```
@@ -122,10 +145,11 @@ Run the tests yourself:
 pytest
 ```
 
-For the full reasoning behind these choices — including the fifteen safety invariants this package holds itself to, and why certain donor-repository patterns were adopted or rejected — see:
+For the full reasoning behind these choices — including the fifteen safety invariants this package holds itself to, why certain donor-repository patterns were adopted or rejected, and exactly what was and wasn't verified against a real running instance — see:
 
 - [`WORKING_ARCHITECTURE.md`](WORKING_ARCHITECTURE.md) — the living design ledger, including the full eighteen-repository survey and disposition table.
-- [`docs/decisions/0001-phase-1-implementation.md`](docs/decisions/0001-phase-1-implementation.md) — the specific decisions (language, transport, capability scope) that turned that ledger into this codebase.
+- [`docs/decisions/0001-phase-1-implementation.md`](docs/decisions/0001-phase-1-implementation.md) — the language, transport, and initial capability-scope decisions.
+- [`docs/decisions/0002-live-verified-read-capabilities.md`](docs/decisions/0002-live-verified-read-capabilities.md) — what was verified live against a running local API, what was probed and blocked, and how the write pipeline is scoped.
 
 The short version of the safety posture: loopback-only by default, read-only by default, no ambient targets (every call names its Brain explicitly), no writing to TheBrain's private files under any circumstances, and no transport — CLI, library, or a future MCP server — is ever allowed more authority than the core safety gate grants it.
 
@@ -138,7 +162,7 @@ The short version of the safety posture: loopback-only by default, read-only by 
 
 ## Contributing to it
 
-The most useful thing you can do right now is run this against a real, disposable test Brain and capture what `thought.search`, `thought.notes`, and neighbor traversal actually return — then turn that into a fixture and a contract test, and promote the capability from candidate to evidenced (the procedure is documented in `capabilities.py`). Adding an endpoint without a fixture and a test is exactly the pattern this project surveyed eighteen other repositories to avoid repeating.
+Two things are most useful right now. First, capturing the request body TheBrain's own desktop app sends when creating a Thought by hand (so `thought.create`'s write body can be verified instead of left as a caller-supplied dict). Second, running one supervised live write — `write attach-url` or `write activate` — against a disposable test Brain, with `--approve` and a real journal file, to confirm the write pipeline behaves the same outside of fixtures as it does inside them. Either way: capture the real shape, turn it into a fixture, add a contract test, and only then promote the capability (the procedure is documented in `capabilities.py`). Adding an endpoint without a fixture and a test is exactly the pattern this project surveyed eighteen other repositories to avoid repeating.
 
 ## License
 

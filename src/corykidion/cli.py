@@ -14,6 +14,7 @@ from corykidion.client import LocalBrainClient
 from corykidion.config import load_config
 from corykidion.errors import CorykidionError
 from corykidion.export import export_thought, write_export
+from corykidion.operations import JournalWriter, WriteOperations
 from corykidion.read import ReadModel
 from corykidion.safety import SafetyGate
 
@@ -68,11 +69,87 @@ def _cmd_thought_find_url(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_thought_search(args: argparse.Namespace) -> int:
+    read_model = _build_read_model(args)
+    results = read_model.search(args.brain_id, args.query, max_results=args.max_results)
+    if not results:
+        print("no matches")
+        return 0
+    for result in results:
+        print(f"{result.thought.id}  {result.name}")
+    return 0
+
+
+def _cmd_thought_graph(args: argparse.Namespace) -> int:
+    read_model = _build_read_model(args)
+    graph = read_model.get_graph(args.brain_id, args.thought_id)
+    print(f"active: {graph.active_thought.id}  {graph.active_thought.name}")
+    print(f"parents:  {', '.join(f'{t.id} {t.name}' for t in graph.parents) or '(none)'}")
+    print(f"children: {', '.join(f'{t.id} {t.name}' for t in graph.children) or '(none)'}")
+    print(f"jumps:    {', '.join(f'{t.id} {t.name}' for t in graph.jumps) or '(none)'}")
+    print(f"links: {len(graph.links)}  attachments: {len(graph.attachments)}")
+    return 0
+
+
+def _cmd_thought_notes(args: argparse.Namespace) -> int:
+    read_model = _build_read_model(args)
+    note = read_model.get_notes(args.brain_id, args.thought_id)
+    print(note.markdown or "(empty note)")
+    return 0
+
+
+def _cmd_activity(args: argparse.Namespace) -> int:
+    read_model = _build_read_model(args)
+    entries = read_model.recent_activity(args.brain_id, max_logs=args.max_logs)
+    if not entries:
+        print("no recent activity")
+        return 0
+    for entry in entries:
+        print(f"{entry.creation_datetime}  mod_type={entry.mod_type}  source={entry.source_id}")
+    return 0
+
+
 def _cmd_export_thought(args: argparse.Namespace) -> int:
     read_model = _build_read_model(args)
     document = export_thought(read_model, args.brain_id, args.thought_id)
     path = write_export(document, args.out)
     print(f"wrote {path}")
+    return 0
+
+
+def _build_write_operations(args: argparse.Namespace) -> WriteOperations:
+    config = load_config(args.config)
+    client = LocalBrainClient(config)
+    scope = frozenset(args.allow_brain) if args.allow_brain else frozenset()
+    # read_only=False only because --approve was required to reach this
+    # function at all (see build_parser) — there is no code path that
+    # constructs a write-enabled gate without that flag having been set.
+    safety = SafetyGate(read_only=False, allowed_brain_ids=scope)
+    journal = JournalWriter(args.journal)
+    return WriteOperations(client, journal, safety=safety)
+
+
+def _cmd_write_attach_url(args: argparse.Namespace) -> int:
+    ops = _build_write_operations(args)
+    plan = ops.plan_attach_url(args.brain_id, args.thought_id, args.url, args.name)
+    print(f"plan {plan.plan_id}: {plan.description}")
+    receipt = ops.apply(plan, approved=True)
+    print(f"status: {receipt.status}  verified: {receipt.verified}  ({receipt.verification_note})")
+    if receipt.error:
+        print(f"error: {receipt.error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_write_activate(args: argparse.Namespace) -> int:
+    ops = _build_write_operations(args)
+    plan = ops.plan_activate_thought(args.brain_id, args.thought_id)
+    print(f"plan {plan.plan_id}: {plan.description}")
+    receipt = ops.apply(plan, approved=True)
+    print(f"status: {receipt.status}  verified: {receipt.verified}  ({receipt.verification_note})")
+    if receipt.error:
+        print(f"error: {receipt.error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -115,6 +192,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_thought_find.add_argument("url")
     p_thought_find.set_defaults(func=_cmd_thought_find_url)
 
+    p_thought_search = thought_sub.add_parser("search", help="search Thoughts by name/label")
+    p_thought_search.add_argument("brain_id")
+    p_thought_search.add_argument("query")
+    p_thought_search.add_argument("--max-results", type=int, default=10)
+    p_thought_search.set_defaults(func=_cmd_thought_search)
+
+    p_thought_graph = thought_sub.add_parser(
+        "graph", help="compound context: parents, children, jumps, links, attachments"
+    )
+    p_thought_graph.add_argument("brain_id")
+    p_thought_graph.add_argument("thought_id")
+    p_thought_graph.set_defaults(func=_cmd_thought_graph)
+
+    p_thought_notes = thought_sub.add_parser("notes", help="read a Thought's note content")
+    p_thought_notes.add_argument("brain_id")
+    p_thought_notes.add_argument("thought_id")
+    p_thought_notes.set_defaults(func=_cmd_thought_notes)
+
+    p_activity = sub.add_parser("activity", help="recent modification log for a Brain")
+    p_activity.add_argument("brain_id")
+    p_activity.add_argument("--max-logs", type=int, default=20)
+    p_activity.set_defaults(func=_cmd_activity)
+
     p_export = sub.add_parser("export", help="export operations")
     export_sub = p_export.add_subparsers(dest="export_command", required=True)
     p_export_thought = export_sub.add_parser("thought", help="export one Thought as JSON")
@@ -122,6 +222,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_export_thought.add_argument("thought_id")
     p_export_thought.add_argument("out", help="output file path")
     p_export_thought.set_defaults(func=_cmd_export_thought)
+
+    p_write = sub.add_parser(
+        "write",
+        help=(
+            "Phase 2: mutating operations. Every subcommand requires --approve "
+            "and --journal explicitly; there is no default-approve path."
+        ),
+    )
+    write_sub = p_write.add_subparsers(dest="write_command", required=True)
+
+    p_write_attach = write_sub.add_parser("attach-url", help="attach a URL to a Thought")
+    p_write_attach.add_argument("brain_id")
+    p_write_attach.add_argument("thought_id")
+    p_write_attach.add_argument("url")
+    p_write_attach.add_argument("name")
+    p_write_attach.add_argument("--approve", action="store_true", required=True)
+    p_write_attach.add_argument("--journal", required=True, help="path to the operation journal")
+    p_write_attach.set_defaults(func=_cmd_write_attach_url)
+
+    p_write_activate = write_sub.add_parser("activate", help="activate a Thought")
+    p_write_activate.add_argument("brain_id")
+    p_write_activate.add_argument("thought_id")
+    p_write_activate.add_argument("--approve", action="store_true", required=True)
+    p_write_activate.add_argument("--journal", required=True, help="path to the operation journal")
+    p_write_activate.set_defaults(func=_cmd_write_activate)
 
     return parser
 
