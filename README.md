@@ -2,15 +2,15 @@
 
 A small, local-first, read-only-first bridge between AI agents and [TheBrain](https://www.thebrain.com/).
 
-It talks to TheBrain's desktop app over its local HTTP API — the one that only exists while the app is open on your machine — and gives an agent a narrow, honest set of things it can do: check that a Brain is open, look up one Thought, list the Brains you have, and check whether a URL is already attached somewhere before creating a duplicate. That's it, today. Nothing here writes to your Brain yet, and nothing here pretends to do more than it can prove.
+It talks to TheBrain's desktop app over its local HTTP API — which is only reachable while the app is open on your machine — and supports a narrow, specific set of operations: check that a Brain is open, look up one Thought, list the Brains you have, and check whether a URL is already attached somewhere before creating a duplicate. That is the complete list of what it does today. It does not write to your Brain, and every capability it does not fully support is documented as unsupported rather than left ambiguous.
 
 Not affiliated with or endorsed by TheBrain Technologies.
 
 ## Why this exists
 
-Before any code was written, this project surveyed eighteen public repositories that touch TheBrain in some way — MCP servers, SDKs, migration scripts, a PowerShell audit tool, a UUID codec — to find out which ideas were actually worth building on. That survey is preserved in full in [`WORKING_ARCHITECTURE.md`](WORKING_ARCHITECTURE.md): what each repo got right, what it got wrong, and what specifically was worth reusing versus rejecting. Nothing from those eighteen repos was copied wholesale into this one. A few patterns were mined; most were left where they were.
+Before any code was written, this project surveyed eighteen public repositories that touch TheBrain in some way — MCP servers, SDKs, migration scripts, a PowerShell audit tool, a UUID codec — to determine which ideas were worth building on. That survey is preserved in full in [`WORKING_ARCHITECTURE.md`](WORKING_ARCHITECTURE.md): what each repository got right, what it got wrong, and what specifically was worth reusing versus rejecting. No code from those eighteen repositories was copied into this one. A small number of design patterns were reused, with attribution recorded in the ledger; most repositories contributed nothing directly.
 
-The short version of what that survey found: most of those eighteen repos are bound to TheBrain's *cloud* API, which can't reach a Brain that only exists on your machine. A few write directly to TheBrain's private files, which is a fast way to corrupt a decade of notes. One official repository — [`TheBrainTech/send-to-thebrain`](https://github.com/TheBrainTech/send-to-thebrain) — turned out to be the most trustworthy foundation: it's TheBrain's own reference implementation of the local API, and everything this package's client does is built directly against what that repository documents.
+Summary of what that survey found: most of the eighteen repositories are bound to TheBrain's *cloud* API, which cannot reach a Brain that exists only on your machine. Several write directly to TheBrain's private files, which risks corrupting the Brain's stored data. One official repository — [`TheBrainTech/send-to-thebrain`](https://github.com/TheBrainTech/send-to-thebrain) — was judged the most reliable foundation: it is TheBrain's own reference implementation of the local API, and this package's client is built directly against the endpoints that repository documents.
 
 ## What actually works right now
 
@@ -18,13 +18,13 @@ The short version of what that survey found: most of those eighteen repos are bo
 |---|---|
 | `status` | Confirms TheBrain's desktop app is reachable, reports which Brain is currently open, and lists every Brain visible on the machine. |
 | `thought get` | Retrieves one Thought by ID: its name and label. |
-| `thought find-url` | Checks whether a URL is already attached to something in a Brain — the same dedup trick the official browser extension uses, so you don't create the same Thought twice. |
+| `thought find-url` | Checks whether a URL is already attached to something in a Brain, using the same duplicate-detection approach as the official browser extension, so you don't create the same Thought twice. |
 | `export thought` | Writes a deterministic, provenance-stamped JSON snapshot of one Thought. This is a projection for inspection, not a backup — TheBrain's own dated backups remain the source of truth. |
 | `capabilities` | Lists exactly what's implemented versus what's planned, so you (or an agent) never have to guess. |
 
-Everything else that sounds like it should exist — searching Thoughts by name, reading notes, walking links, exploring neighbors — is deliberately **not implemented yet**. TheBrain states that its local API "speaks the same shape" as its documented cloud API, which makes those operations *plausible*, but no source available while building this had a captured request/response for them against a real local instance. Rather than guess at a shape and ship something that quietly breaks on a real Brain, this package registers those operations as known-but-unverified and refuses to call them — you'll get a clear `CapabilityUnknown` error instead of a wrong answer. Run `corykidion capabilities` to see the live list of what's evidenced versus what's still candidate.
+Everything else that sounds like it should exist — searching Thoughts by name, reading notes, walking links, exploring neighbors — is deliberately **not implemented yet**. TheBrain states that its local API "speaks the same shape" as its documented cloud API, which makes those operations *plausible*, but no source available while building this had a captured request/response for them against a real local instance. Rather than guess at a shape and risk incorrect results against a real Brain, this package registers those operations as known-but-unverified and refuses to call them — calling one raises a `CapabilityUnknown` error instead of returning a wrong answer. Run `corykidion capabilities` to see the live list of what's evidenced versus what's still candidate.
 
-There is also no write path. Creating Thoughts, attaching URLs, adding notes — all of that is designed for (see the Phase 2 section of the architecture ledger) but not built, on purpose. A tool that only reads is much cheaper to trust.
+There is also no write path. Creating Thoughts, attaching URLs, and adding notes are designed for (see the Phase 2 section of the architecture ledger) but not built. This is intentional: a read-only tool has a much smaller set of ways to cause damage, and the additional safety mechanisms writes would require — approval steps, an operation journal, post-write verification — are specified in the ledger but not yet implemented or tested.
 
 ## Installing it
 
@@ -143,7 +143,3 @@ The most useful thing you can do right now is run this against a real, disposabl
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
-
----
-
-*The technical ledger stops here. Everything above is meant to stay accurate and a little dry on purpose — it's the part a stranger, or an agent, needs to trust before touching your Brain. What this project means, what to call the things it talks to, the story of the eighteen repos and the one that turned out to matter — that part's still unwritten, and it's not this document's to write.*
